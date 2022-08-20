@@ -1,5 +1,7 @@
 # FastAPI-Login
 
+This repository is cloned from the original repository, which adds a new feature to support token invalid callback.
+
 FastAPI-Login tries to provide similar functionality as [Flask-Login](https://github.com/maxcountryman/flask-login) does.
 
 ## Documentation

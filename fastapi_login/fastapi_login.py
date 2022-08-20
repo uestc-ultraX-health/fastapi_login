@@ -1,14 +1,16 @@
 import inspect
 import typing
 import warnings
+import asyncio
 from datetime import datetime, timedelta
-from typing import Awaitable, Callable, Collection, Dict, Union
+from typing import Awaitable, Callable, Collection, Dict, Union, Any
 
 import jwt
 from fastapi import FastAPI, Request, Response
 from fastapi.security import OAuth2PasswordBearer, SecurityScopes
 from passlib.context import CryptContext
 from pydantic import parse_obj_as
+from apscheduler.schedulers.background import BackgroundScheduler
 
 from fastapi_login.exceptions import InvalidCredentialsException
 from fastapi_login.secrets import Secret
@@ -40,6 +42,7 @@ class LoginManager(OAuth2PasswordBearer):
         custom_exception: Exception = None,
         default_expiry: timedelta = timedelta(minutes=15),
         scopes: Dict[str, str] = None,
+        expires_callback: Callable[[str], None] = None
     ):
         """
         Initializes LoginManager
@@ -55,7 +58,7 @@ class LoginManager(OAuth2PasswordBearer):
             default_expiry (datetime.timedelta): The default expiry time of the token, defaults to 15 minutes
             scopes (Dict[str, str]): Scopes argument of OAuth2PasswordBearer for more information see
                 `https://fastapi.tiangolo.com/advanced/security/oauth2-scopes/#oauth2-security-scheme`
-
+            expire_callback (Callable[[str], None]): The callback function passed by customer will be invoked when the token is expired
         """
         if use_cookie is False and use_header is False:
             # TODO: change this to AttributeError
@@ -77,7 +80,9 @@ class LoginManager(OAuth2PasswordBearer):
         self.use_header = use_header
         self.cookie_name = cookie_name
         self.default_expiry = default_expiry
-
+        self.expires_callback = expires_callback
+        self._token_timer_jobs = {}
+        self._expires_scheduler = BackgroundScheduler()
         # When a custom_exception is set we have to make sure it is actually raised
         # when calling super(LoginManager, self).__call__(request) inside `_get_token`
         # a HTTPException from fastapi is raised automatically as long as auto_error
@@ -290,8 +295,33 @@ class LoginManager(OAuth2PasswordBearer):
         encoded_jwt = jwt.encode(
             to_encode, self.secret.secret_for_encode, self.algorithm
         )
+
+        if self.expires_callback is not None:
+            expires_time = datetime.now() + (expires if expires else self.default_expiry)
+            job_id = self._expires_scheduler.add_job(
+                self._expires_callback, 'date', kwargs={'token': encoded_jwt}, next_run_time=expires_time)
+            self._token_timer_jobs[encoded_jwt] = job_id
+    
+            if not self._expires_scheduler.running:
+                self._expires_scheduler.start()
         return encoded_jwt
 
+    def _expires_callback(self, token: str) -> None:
+        """
+        Customer callback function wrapper
+
+        Args:
+            token (str): The encoded jwt token
+        """
+        async def _inner_callback():
+            user = await self.get_current_user(token)
+            del self._token_timer_jobs[token]
+
+            if self.expires_callback is not None:
+                self.expires_callback(user)
+                
+        asyncio.run(_inner_callback())        
+        
     def set_cookie(self, response: Response, token: str) -> None:
         """
         Utility function to set a cookie containing token on the response

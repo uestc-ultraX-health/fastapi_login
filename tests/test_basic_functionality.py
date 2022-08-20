@@ -200,3 +200,20 @@ def test_has_scopes_which_are_not_required(clean_manager, default_data):
     default_data["scopes"] = scopes
     token = clean_manager.create_access_token(data=default_data)
     assert clean_manager.has_scopes(token, SecurityScopes(scopes=required_scopes))
+
+def test_invoke_custom_callback_function_when_expired(clean_manager, default_data):
+    
+    @clean_manager.user_loader
+    def load_user(email: str):
+        return default_data["sub"]
+    test_result = None
+    def f(username):
+        nonlocal test_result
+        test_result = username
+        
+    clean_manager.expires_callback = f
+    
+    token = clean_manager.create_access_token(data=default_data, expires=timedelta(seconds=10))
+    
+    time.sleep(11)
+    assert test_result != None
